@@ -1,0 +1,5 @@
+Isolate compromised subnet
+Identify malware signature
+Dump memory from infected domain controller
+Rotate active directory credentials
+Restore from backup

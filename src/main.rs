@@ -8,15 +8,17 @@ use std::{
 };
 
 use clap::Parser;
-use crossterm::event::{Event, EventStream, KeyCode, KeyModifiers};
+use crossterm::event::{Event, EventStream, KeyCode, KeyModifiers, EnableMouseCapture, DisableMouseCapture};
 use futures::StreamExt;
 use libp2p::{
-    Multiaddr, StreamProtocol, gossipsub, identify, mdns,
-    request_response::{self, ProtocolSupport, cbor},
+    gossipsub, identify, mdns,
+    request_response::{self, cbor, ProtocolSupport},
     swarm::{NetworkBehaviour, SwarmEvent},
+    Multiaddr, StreamProtocol,
 };
+use rand::{distributions::Alphanumeric, Rng};
 use serde::{Deserialize, Serialize};
-use tui::{Command, parse_command};
+use tui::{parse_command, Command};
 
 // --- CLI ---
 
@@ -26,12 +28,18 @@ struct Args {
     port: u16,
     #[arg(long)]
     name: String,
+    #[arg(long)]
+    file: Option<String>,
+    #[arg(long)]
+    topic: Option<String>,
 }
 
 // --- Request/response sync protocol ---
 
 #[derive(Debug, Serialize, Deserialize)]
-struct SyncRequest;
+struct SyncRequest {
+    topic: String,
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 struct SyncResponse {
@@ -48,11 +56,18 @@ struct Behaviour {
     sync: cbor::Behaviour<SyncRequest, SyncResponse>,
 }
 
-const TOPIC: &str = "ops-board";
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
+
+    let topic_str = args.topic.unwrap_or_else(|| {
+        let random_string: String = rand::thread_rng()
+            .sample_iter(&Alphanumeric)
+            .take(6)
+            .map(char::from)
+            .collect();
+        format!("ops-board-{}", random_string.to_lowercase())
+    });
 
     // Build swarm
     let mut swarm = libp2p::SwarmBuilder::with_new_identity()
@@ -86,7 +101,7 @@ async fn main() -> anyhow::Result<()> {
                 )?;
 
                 let identify = identify::Behaviour::new(
-                    identify::Config::new("/ops-board/1.0.0".to_string(), key.public())
+                    identify::Config::new(format!("/ops-board/1.0.0/{}", topic_str), key.public())
                         .with_agent_version(args.name.clone()),
                 );
 
@@ -109,18 +124,31 @@ async fn main() -> anyhow::Result<()> {
         .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(60)))
         .build();
 
-    let topic = gossipsub::IdentTopic::new(TOPIC);
+    let topic = gossipsub::IdentTopic::new(topic_str.clone());
     swarm.behaviour_mut().gossipsub.subscribe(&topic)?;
     swarm.listen_on(format!("/ip4/0.0.0.0/tcp/{}", args.port).parse::<Multiaddr>()?)?;
 
     // App state
-    let mut app = tui::App::new(args.name.clone());
+    let mut app = tui::App::new(args.name.clone(), topic_str.clone());
+
+    if let Some(file_path) = &args.file {
+        let contents = std::fs::read_to_string(file_path)?;
+        for line in contents.lines() {
+            let task = line.trim();
+            if !task.is_empty() {
+                app.doc.add_objective(task, "unassigned");
+            }
+        }
+        app.push_log(format!("ingested objectives from {}", file_path));
+    }
 
     // Terminal
     let mut terminal = ratatui::init();
+    crossterm::execute!(std::io::stdout(), EnableMouseCapture)?;
 
     let result = run(&mut terminal, &mut app, &mut swarm, &topic, &args.name).await;
 
+    crossterm::execute!(std::io::stdout(), DisableMouseCapture).ok();
     ratatui::restore();
     result
 }
@@ -170,7 +198,7 @@ fn handle_swarm(
             swarm
                 .behaviour_mut()
                 .sync
-                .send_request(&peer_id, SyncRequest);
+                .send_request(&peer_id, SyncRequest { topic: app.topic.clone() });
         }
 
         SwarmEvent::ConnectionClosed {
@@ -222,10 +250,8 @@ fn handle_swarm(
             info,
             ..
         })) => {
-            let is_ops_peer = info
-                .protocols
-                .iter()
-                .any(|p| p.as_ref().starts_with("/ops-board"));
+            let expected_protocol = format!("/ops-board/1.0.0/{}", app.topic);
+            let is_ops_peer = info.protocol_version == expected_protocol;
             if is_ops_peer {
                 let name = info.agent_version.clone();
                 peer_map.insert(peer_id, name.clone());
@@ -242,15 +268,18 @@ fn handle_swarm(
         }
 
         SwarmEvent::Behaviour(BehaviourEvent::Sync(request_response::Event::Message {
-            message: request_response::Message::Request { channel, .. },
+            peer: _,
+            message: request_response::Message::Request { request, channel, .. },
             ..
         })) => {
-            let doc_bytes = app.doc.save();
-            swarm
-                .behaviour_mut()
-                .sync
-                .send_response(channel, SyncResponse { doc_bytes })
-                .ok();
+            if request.topic == app.topic {
+                let doc_bytes = app.doc.save();
+                swarm
+                    .behaviour_mut()
+                    .sync
+                    .send_response(channel, SyncResponse { doc_bytes })
+                    .ok();
+            }
         }
 
         SwarmEvent::Behaviour(BehaviourEvent::Sync(request_response::Event::Message {
@@ -276,6 +305,23 @@ fn handle_input(
     topic: &gossipsub::IdentTopic,
     operator: &str,
 ) -> anyhow::Result<bool> {
+    if let Event::Mouse(mouse_event) = event {
+        if mouse_event.kind == crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left) {
+            if tui::is_copy_button_clicked(app, mouse_event.column, mouse_event.row) {
+                if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                    if clipboard.set_text(app.topic.clone()).is_ok() {
+                        app.push_log("copied topic to clipboard");
+                    } else {
+                        app.push_log("failed to copy to clipboard");
+                    }
+                } else {
+                    app.push_log("failed to access clipboard");
+                }
+            }
+        }
+        return Ok(false);
+    }
+
     let Event::Key(key) = event else {
         return Ok(false);
     };

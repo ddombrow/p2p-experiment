@@ -1,0 +1,5 @@
+Phish initial access vector
+Establish persistence on patient zero
+Perform internal reconnaissance
+Escalate privileges to domain admin
+Exfiltrate flag.txt

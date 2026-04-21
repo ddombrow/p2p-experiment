@@ -53,18 +53,19 @@ pub struct Doc {
 
 impl Doc {
     pub fn new() -> Self {
-        let mut inner = AutoCommit::new();
-        inner
-            .put_object(automerge::ROOT, "objectives", ObjType::List)
-            .unwrap();
-        inner
-            .put_object(automerge::ROOT, "notes", ObjType::List)
-            .unwrap();
+        let inner = AutoCommit::new();
         Self { inner }
     }
 
+    fn get_or_create_list(&mut self, name: &str) -> automerge::ObjId {
+        match self.inner.get(automerge::ROOT, name).unwrap() {
+            Some((_, id)) => id,
+            None => self.inner.put_object(automerge::ROOT, name, ObjType::List).unwrap(),
+        }
+    }
+
     pub fn add_objective(&mut self, task: &str, assignee: &str) -> Vec<u8> {
-        let obj_id = self.list_id("objectives");
+        let obj_id = self.get_or_create_list("objectives");
         let len = self.inner.length(&obj_id);
         let item = self
             .inner
@@ -77,7 +78,7 @@ impl Doc {
     }
 
     pub fn set_status(&mut self, index: usize, status: &str) -> Vec<u8> {
-        let obj_id = self.list_id("objectives");
+        let obj_id = self.get_or_create_list("objectives");
         if let Ok(Some((_, item_id))) = self.inner.get(&obj_id, index) {
             self.inner.put(&item_id, "status", status).unwrap();
         }
@@ -85,7 +86,7 @@ impl Doc {
     }
 
     pub fn take_objective(&mut self, index: usize, operator: &str) -> Vec<u8> {
-        let obj_id = self.list_id("objectives");
+        let obj_id = self.get_or_create_list("objectives");
         if let Ok(Some((_, item_id))) = self.inner.get(&obj_id, index) {
             self.inner.put(&item_id, "assignee", operator).unwrap();
         }
@@ -93,13 +94,13 @@ impl Doc {
     }
 
     pub fn delete_objective(&mut self, index: usize) -> Vec<u8> {
-        let obj_id = self.list_id("objectives");
+        let obj_id = self.get_or_create_list("objectives");
         self.inner.delete(&obj_id, index).unwrap();
         self.inner.save()
     }
 
     pub fn add_note(&mut self, author: &str, text: &str) -> Vec<u8> {
-        let obj_id = self.list_id("notes");
+        let obj_id = self.get_or_create_list("notes");
         let len = self.inner.length(&obj_id);
         let item = self
             .inner
@@ -125,14 +126,6 @@ impl Doc {
             objectives: self.read_objectives(),
             notes: self.read_notes(),
         }
-    }
-
-    fn list_id(&self, name: &str) -> automerge::ObjId {
-        self.inner
-            .get(automerge::ROOT, name)
-            .unwrap()
-            .map(|(_, id)| id)
-            .unwrap()
     }
 
     fn read_objectives(&self) -> Vec<Objective> {
@@ -181,3 +174,42 @@ impl Doc {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_add_objective() {
+        let mut doc = Doc::new();
+        doc.add_objective("Test Task", "unassigned");
+        let board = doc.read();
+        assert_eq!(board.objectives.len(), 1);
+        assert_eq!(board.objectives[0].task, "Test Task");
+    }
+}
+
+    #[test]
+    fn test_merge_conflict() {
+        let mut doc1 = Doc::new();
+        doc1.add_objective("Task A", "unassigned");
+        
+        let mut doc2 = Doc::new(); // doc2 has empty list
+        
+        doc1.merge_bytes(&doc2.save()).unwrap();
+        
+        let board = doc1.read();
+        assert_eq!(board.objectives.len(), 1, "Objectives length was {}", board.objectives.len());
+    }
+
+    #[test]
+    fn test_merge_conflict_2() {
+        let mut doc1 = Doc::new();
+        let mut doc2 = Doc::new(); 
+        doc2.add_objective("Task A", "unassigned");
+        
+        doc1.merge_bytes(&doc2.save()).unwrap();
+        
+        let board = doc1.read();
+        assert_eq!(board.objectives.len(), 1, "Objectives length was {}", board.objectives.len());
+    }

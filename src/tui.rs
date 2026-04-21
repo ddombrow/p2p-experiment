@@ -2,7 +2,7 @@ use crate::doc::{Board, Status};
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Color, Modifier, Style, Stylize},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
 };
@@ -15,6 +15,7 @@ pub struct Peer {
 pub struct App {
     pub doc: crate::doc::Doc,
     pub operator: String,
+    pub topic: String,
     pub peers: Vec<Peer>,
     pub input: String,
     pub log: Vec<String>,
@@ -22,10 +23,11 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(operator: String) -> Self {
+    pub fn new(operator: String, topic: String) -> Self {
         Self {
             doc: crate::doc::Doc::new(),
             operator,
+            topic,
             peers: vec![],
             input: String::new(),
             log: vec![],
@@ -62,6 +64,22 @@ pub fn render(frame: &mut Frame, app: &App) {
     }
 }
 
+pub fn is_copy_button_clicked(app: &App, col: u16, row: u16) -> bool {
+    if row != 0 {
+        return false;
+    }
+    let online_count = app.peers.iter().filter(|p| p.online).count();
+    let peers_len = if online_count == 0 {
+        8 // "no peers"
+    } else {
+        online_count.to_string().len() + 7 // "X online"
+    };
+    let start_col = 11 + app.operator.len() + 11 + peers_len + 10 + app.topic.len() + 3;
+    let end_col = start_col + 6; // "[Copy]" is 6 chars
+
+    (col as usize) >= start_col && (col as usize) < end_col
+}
+
 fn render_statusbar(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let online_count = app.peers.iter().filter(|p| p.online).count();
     let peers = if online_count == 0 {
@@ -69,7 +87,18 @@ fn render_statusbar(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     } else {
         format!("{online_count} online")
     };
-    let text = format!(" OPERATOR: {}   ONLINE: {}", app.operator, peers);
+    
+    let text = Line::from(vec![
+        Span::raw(" OPERATOR: "),
+        Span::styled(&app.operator, Style::default().fg(Color::Yellow)),
+        Span::raw("   ONLINE: "),
+        Span::styled(peers, Style::default().fg(Color::Green)),
+        Span::raw("   TOPIC: "),
+        Span::styled(&app.topic, Style::default().fg(Color::Cyan)),
+        Span::raw("   "),
+        Span::styled("[Copy]", Style::default().fg(Color::Black).bg(Color::White)),
+    ]);
+    
     frame.render_widget(
         Paragraph::new(text).style(Style::default().bg(Color::DarkGray).fg(Color::White)),
         area,
@@ -90,11 +119,11 @@ fn render_main(frame: &mut Frame, board: &Board, app: &App, area: ratatui::layou
         .iter()
         .enumerate()
         .map(|(i, obj)| {
-            let (status_color, status_mod) = match obj.status {
-                Status::Active => (Color::Yellow, Modifier::BOLD),
-                Status::Done => (Color::Green, Modifier::DIM),
-                Status::Abort => (Color::Red, Modifier::DIM),
-                Status::Pending => (Color::Gray, Modifier::empty()),
+            let (badge_fg, badge_bg, task_style) = match obj.status {
+                Status::Active   => (Color::Black, Color::Yellow,  Style::default().add_modifier(Modifier::BOLD)),
+                Status::Done     => (Color::Black, Color::Green,   Style::default().add_modifier(Modifier::DIM)),
+                Status::Abort    => (Color::White, Color::Red,     Style::default().add_modifier(Modifier::DIM)),
+                Status::Pending  => (Color::Black, Color::DarkGray,Style::default()),
             };
             let line = Line::from(vec![
                 Span::styled(
@@ -102,10 +131,14 @@ fn render_main(frame: &mut Frame, board: &Board, app: &App, area: ratatui::layou
                     Style::default().fg(Color::DarkGray),
                 ),
                 Span::styled(
-                    format!("[{}] ", obj.status.as_str()),
-                    Style::default().fg(status_color).add_modifier(status_mod),
+                    format!(" {} ", obj.status.as_str()),
+                    Style::default().fg(badge_fg).bg(badge_bg).add_modifier(Modifier::BOLD),
                 ),
-                Span::raw(format!("{:<30}", obj.task)),
+                Span::raw(" "),
+                Span::styled(
+                    format!("{:<30}", obj.task),
+                    task_style,
+                ),
                 Span::styled(
                     format!(" @ {}", obj.assignee),
                     Style::default().fg(Color::Cyan),

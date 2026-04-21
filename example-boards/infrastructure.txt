@@ -1,0 +1,4 @@
+Provision 3 new worker nodes
+Update Kubernetes certificates
+Migrate database to primary cluster
+Validate load balancer rules
