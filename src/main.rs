@@ -1,0 +1,417 @@
+mod doc;
+mod tui;
+
+use std::{
+    collections::HashMap,
+    hash::{Hash, Hasher},
+    time::Duration,
+};
+
+use clap::Parser;
+use crossterm::event::{Event, EventStream, KeyCode, KeyModifiers};
+use futures::StreamExt;
+use libp2p::{
+    Multiaddr, StreamProtocol, gossipsub, identify, mdns,
+    request_response::{self, ProtocolSupport, cbor},
+    swarm::{NetworkBehaviour, SwarmEvent},
+};
+use serde::{Deserialize, Serialize};
+use tui::{Command, parse_command};
+
+// --- CLI ---
+
+#[derive(Parser)]
+struct Args {
+    #[arg(long, default_value = "0")]
+    port: u16,
+    #[arg(long)]
+    name: String,
+}
+
+// --- Request/response sync protocol ---
+
+#[derive(Debug, Serialize, Deserialize)]
+struct SyncRequest;
+
+#[derive(Debug, Serialize, Deserialize)]
+struct SyncResponse {
+    doc_bytes: Vec<u8>,
+}
+
+// --- Combined network behaviour ---
+
+#[derive(NetworkBehaviour)]
+struct Behaviour {
+    mdns: mdns::tokio::Behaviour,
+    gossipsub: gossipsub::Behaviour,
+    identify: identify::Behaviour,
+    sync: cbor::Behaviour<SyncRequest, SyncResponse>,
+}
+
+const TOPIC: &str = "ops-board";
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let args = Args::parse();
+
+    // Build swarm
+    let mut swarm = libp2p::SwarmBuilder::with_new_identity()
+        .with_tokio()
+        .with_tcp(
+            libp2p::tcp::Config::default(),
+            libp2p::noise::Config::new,
+            libp2p::yamux::Config::default,
+        )?
+        .with_behaviour(
+            |key| -> Result<Behaviour, Box<dyn std::error::Error + Send + Sync>> {
+                let mdns = mdns::tokio::Behaviour::new(
+                    mdns::Config::default(),
+                    key.public().to_peer_id(),
+                )?;
+
+                let message_id_fn = |msg: &gossipsub::Message| {
+                    let mut h = std::collections::hash_map::DefaultHasher::new();
+                    msg.data.hash(&mut h);
+                    gossipsub::MessageId::from(h.finish().to_string())
+                };
+                let gs_config = gossipsub::ConfigBuilder::default()
+                    .heartbeat_interval(Duration::from_secs(5))
+                    .validation_mode(gossipsub::ValidationMode::Strict)
+                    .message_id_fn(message_id_fn)
+                    .build()
+                    .map_err(Box::<dyn std::error::Error + Send + Sync>::from)?;
+                let gossipsub = gossipsub::Behaviour::new(
+                    gossipsub::MessageAuthenticity::Signed(key.clone()),
+                    gs_config,
+                )?;
+
+                let identify = identify::Behaviour::new(
+                    identify::Config::new("/ops-board/1.0.0".to_string(), key.public())
+                        .with_agent_version(args.name.clone()),
+                );
+
+                let sync = cbor::Behaviour::<SyncRequest, SyncResponse>::new(
+                    [(
+                        StreamProtocol::new("/ops-board/sync/1"),
+                        ProtocolSupport::Full,
+                    )],
+                    request_response::Config::default(),
+                );
+
+                Ok(Behaviour {
+                    mdns,
+                    gossipsub,
+                    identify,
+                    sync,
+                })
+            },
+        )?
+        .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(60)))
+        .build();
+
+    let topic = gossipsub::IdentTopic::new(TOPIC);
+    swarm.behaviour_mut().gossipsub.subscribe(&topic)?;
+    swarm.listen_on(format!("/ip4/0.0.0.0/tcp/{}", args.port).parse::<Multiaddr>()?)?;
+
+    // App state
+    let mut app = tui::App::new(args.name.clone());
+
+    // Terminal
+    let mut terminal = ratatui::init();
+
+    let result = run(&mut terminal, &mut app, &mut swarm, &topic, &args.name).await;
+
+    ratatui::restore();
+    result
+}
+
+async fn run(
+    terminal: &mut ratatui::Terminal<ratatui::prelude::CrosstermBackend<std::io::Stdout>>,
+    app: &mut tui::App,
+    swarm: &mut libp2p::Swarm<Behaviour>,
+    topic: &gossipsub::IdentTopic,
+    operator: &str,
+) -> anyhow::Result<()> {
+    let mut events = EventStream::new();
+    let mut peer_map: HashMap<libp2p::PeerId, String> = HashMap::new();
+
+    loop {
+        terminal.draw(|f| tui::render(f, app))?;
+
+        tokio::select! {
+            swarm_event = swarm.select_next_some() => {
+                handle_swarm(swarm_event, app, swarm, topic, &mut peer_map)?;
+            }
+            Some(Ok(term_event)) = events.next() => {
+                if handle_input(term_event, app, swarm, topic, operator)? {
+                    break;
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn handle_swarm(
+    event: SwarmEvent<BehaviourEvent>,
+    app: &mut tui::App,
+    swarm: &mut libp2p::Swarm<Behaviour>,
+    _topic: &gossipsub::IdentTopic,
+    peer_map: &mut HashMap<libp2p::PeerId, String>,
+) -> anyhow::Result<()> {
+    match event {
+        SwarmEvent::NewListenAddr { address, .. } => {
+            app.push_log(format!("listening on {address}"));
+        }
+
+        SwarmEvent::ConnectionEstablished { peer_id, .. } => {
+            app.push_log(format!("connected: {peer_id}"));
+            swarm
+                .behaviour_mut()
+                .sync
+                .send_request(&peer_id, SyncRequest);
+        }
+
+        SwarmEvent::ConnectionClosed {
+            peer_id,
+            num_established,
+            ..
+        } => {
+            if num_established == 0
+                && let Some(name) = peer_map.remove(&peer_id)
+            {
+                app.push_log(format!("disconnected: {name}"));
+                if let Some(peer) = app.peers.iter_mut().find(|p| p.name == name) {
+                    peer.online = false;
+                }
+            }
+        }
+
+        SwarmEvent::Behaviour(BehaviourEvent::Mdns(mdns::Event::Discovered(peers))) => {
+            for (peer_id, addr) in peers {
+                swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
+                if !swarm.is_connected(&peer_id)
+                    && let Err(e) = swarm.dial(addr)
+                {
+                    app.push_log(format!("dial error: {e}"));
+                }
+            }
+        }
+
+        SwarmEvent::Behaviour(BehaviourEvent::Mdns(mdns::Event::Expired(peers))) => {
+            for (peer_id, _) in peers {
+                swarm
+                    .behaviour_mut()
+                    .gossipsub
+                    .remove_explicit_peer(&peer_id);
+            }
+        }
+
+        SwarmEvent::Behaviour(BehaviourEvent::Gossipsub(gossipsub::Event::Message {
+            message,
+            ..
+        })) => {
+            if let Err(e) = app.doc.merge_bytes(&message.data) {
+                app.push_log(format!("merge error: {e}"));
+            }
+        }
+
+        SwarmEvent::Behaviour(BehaviourEvent::Identify(identify::Event::Received {
+            peer_id,
+            info,
+            ..
+        })) => {
+            let is_ops_peer = info
+                .protocols
+                .iter()
+                .any(|p| p.as_ref().starts_with("/ops-board"));
+            if is_ops_peer {
+                let name = info.agent_version.clone();
+                peer_map.insert(peer_id, name.clone());
+                if let Some(peer) = app.peers.iter_mut().find(|p| p.name == name) {
+                    peer.online = true;
+                } else {
+                    app.peers.push(tui::Peer {
+                        name: name.clone(),
+                        online: true,
+                    });
+                }
+                app.push_log(format!("online: {name}"));
+            }
+        }
+
+        SwarmEvent::Behaviour(BehaviourEvent::Sync(request_response::Event::Message {
+            message: request_response::Message::Request { channel, .. },
+            ..
+        })) => {
+            let doc_bytes = app.doc.save();
+            swarm
+                .behaviour_mut()
+                .sync
+                .send_response(channel, SyncResponse { doc_bytes })
+                .ok();
+        }
+
+        SwarmEvent::Behaviour(BehaviourEvent::Sync(request_response::Event::Message {
+            message: request_response::Message::Response { response, .. },
+            ..
+        })) => {
+            if let Err(e) = app.doc.merge_bytes(&response.doc_bytes) {
+                app.push_log(format!("sync error: {e}"));
+            } else {
+                app.push_log("synced doc from peer".to_string());
+            }
+        }
+
+        _ => {}
+    }
+    Ok(())
+}
+
+fn handle_input(
+    event: Event,
+    app: &mut tui::App,
+    swarm: &mut libp2p::Swarm<Behaviour>,
+    topic: &gossipsub::IdentTopic,
+    operator: &str,
+) -> anyhow::Result<bool> {
+    let Event::Key(key) = event else {
+        return Ok(false);
+    };
+
+    // Dismiss help modal with Esc or Enter
+    if app.show_help {
+        match key.code {
+            KeyCode::Esc | KeyCode::Enter => {
+                app.show_help = false;
+            }
+            _ => {}
+        }
+        return Ok(false);
+    }
+
+    match key.code {
+        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            return Ok(true);
+        }
+        KeyCode::Char(c) => {
+            app.input.push(c);
+        }
+        KeyCode::Backspace => {
+            app.input.pop();
+        }
+        KeyCode::Enter => {
+            let input = std::mem::take(&mut app.input);
+            if execute_command(parse_command(&input), app, swarm, topic, operator)? {
+                return Ok(true);
+            }
+        }
+        KeyCode::Esc => {
+            app.input.clear();
+        }
+        _ => {}
+    }
+
+    Ok(false)
+}
+
+fn execute_command(
+    cmd: Command,
+    app: &mut tui::App,
+    swarm: &mut libp2p::Swarm<Behaviour>,
+    topic: &gossipsub::IdentTopic,
+    operator: &str,
+) -> anyhow::Result<bool> {
+    let bytes = match cmd {
+        Command::Add { task } => {
+            app.push_log(format!("added \"{task}\""));
+            Some(app.doc.add_objective(&task, "unassigned"))
+        }
+        Command::Assign { index, assignee } => {
+            let board = app.doc.read();
+            if index >= board.objectives.len() {
+                app.push_log(format!("no objective [{}]", index + 1));
+                return Ok(false);
+            }
+            let known: Vec<String> = std::iter::once(operator.to_string())
+                .chain(app.peers.iter().map(|p| p.name.clone()))
+                .collect();
+            let matched = known
+                .iter()
+                .find(|n| n.to_lowercase().starts_with(&assignee.to_lowercase()))
+                .cloned();
+            match matched {
+                Some(name) => {
+                    app.push_log(format!("assigned [{}] to {name}", index + 1));
+                    Some(app.doc.take_objective(index, &name))
+                }
+                None => {
+                    app.push_log(format!(
+                        "unknown operator \"{assignee}\" — known: {}",
+                        known.join(", ")
+                    ));
+                    None
+                }
+            }
+        }
+        Command::Status { index, status } => {
+            let len = app.doc.read().objectives.len();
+            if index >= len {
+                app.push_log(format!("no objective [{}]", index + 1));
+                return Ok(false);
+            }
+            app.push_log(format!("set [{}] -> {status}", index + 1));
+            Some(app.doc.set_status(index, &status))
+        }
+        Command::Take { index } => {
+            let len = app.doc.read().objectives.len();
+            if index >= len {
+                app.push_log(format!("no objective [{}]", index + 1));
+                return Ok(false);
+            }
+            app.push_log(format!("took [{}]", index + 1));
+            Some(app.doc.take_objective(index, operator))
+        }
+        Command::Delete { index } => {
+            let len = app.doc.read().objectives.len();
+            if index >= len {
+                app.push_log(format!("no objective [{}]", index + 1));
+                return Ok(false);
+            }
+            app.push_log(format!("deleted [{}]", index + 1));
+            Some(app.doc.delete_objective(index))
+        }
+        Command::Note { text } => {
+            app.push_log(format!("note: {text}"));
+            Some(app.doc.add_note(operator, &text))
+        }
+        Command::Clear => {
+            app.doc = crate::doc::Doc::new();
+            app.push_log("document cleared");
+            Some(app.doc.save())
+        }
+        Command::Help => {
+            app.show_help = true;
+            None
+        }
+        Command::Quit => return Ok(true),
+        Command::Unknown(s) => {
+            if !s.is_empty() {
+                app.push_log(format!("unknown command: {s}"));
+            }
+            None
+        }
+    };
+
+    if let Some(bytes) = bytes
+        && let Err(e) = swarm
+            .behaviour_mut()
+            .gossipsub
+            .publish(topic.clone(), bytes)
+    {
+        app.push_log(format!("publish error: {e}"));
+    }
+
+    Ok(false)
+}
