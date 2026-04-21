@@ -306,17 +306,17 @@ fn handle_input(
     operator: &str,
 ) -> anyhow::Result<bool> {
     if let Event::Mouse(mouse_event) = event {
-        if mouse_event.kind == crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left) {
-            if tui::is_copy_button_clicked(app, mouse_event.column, mouse_event.row) {
-                if let Ok(mut clipboard) = arboard::Clipboard::new() {
-                    if clipboard.set_text(app.topic.clone()).is_ok() {
-                        app.push_log("copied topic to clipboard");
-                    } else {
-                        app.push_log("failed to copy to clipboard");
-                    }
+        if mouse_event.kind == crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left)
+            && tui::is_copy_button_clicked(app, mouse_event.column, mouse_event.row)
+        {
+            if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                if clipboard.set_text(app.topic.clone()).is_ok() {
+                    app.push_log("copied topic to clipboard");
                 } else {
-                    app.push_log("failed to access clipboard");
+                    app.push_log("failed to copy to clipboard");
                 }
+            } else {
+                app.push_log("failed to access clipboard");
             }
         }
         return Ok(false);
