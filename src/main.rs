@@ -166,13 +166,38 @@ async fn run(
     loop {
         terminal.draw(|f| tui::render(f, app))?;
 
+        let flash_sleep = async {
+            let mention_next = app.mention_bell.and_then(|t| {
+                let elapsed = t.elapsed();
+                let ms = elapsed.as_millis();
+                let next_ms: u64 = if ms < 200 { 200 } else if ms < 350 { 350 } else if ms < 600 { 600 } else { return None; };
+                std::time::Duration::from_millis(next_ms).checked_sub(elapsed)
+            });
+            let deadlines = [
+                app.copy_flash.and_then(|t| std::time::Duration::from_millis(300).checked_sub(t.elapsed())),
+                mention_next,
+            ];
+            match deadlines.iter().flatten().copied().min() {
+                Some(d) => tokio::time::sleep(d).await,
+                None    => std::future::pending::<()>().await,
+            }
+        };
+
         tokio::select! {
             swarm_event = swarm.select_next_some() => {
-                handle_swarm(swarm_event, app, swarm, topic, &mut peer_map)?;
+                handle_swarm(swarm_event, app, swarm, topic, &mut peer_map, operator)?;
             }
             Some(Ok(term_event)) = events.next() => {
                 if handle_input(term_event, app, swarm, topic, operator)? {
                     break;
+                }
+            }
+            _ = flash_sleep => {
+                if app.copy_flash.map(|t| t.elapsed() >= std::time::Duration::from_millis(300)).unwrap_or(false) {
+                    app.copy_flash = None;
+                }
+                if app.mention_bell.map(|t| t.elapsed() >= std::time::Duration::from_millis(600)).unwrap_or(false) {
+                    app.mention_bell = None;
                 }
             }
         }
@@ -185,8 +210,9 @@ fn handle_swarm(
     event: SwarmEvent<BehaviourEvent>,
     app: &mut tui::App,
     swarm: &mut libp2p::Swarm<Behaviour>,
-    _topic: &gossipsub::IdentTopic,
+    topic: &gossipsub::IdentTopic,
     peer_map: &mut HashMap<libp2p::PeerId, String>,
+    operator: &str,
 ) -> anyhow::Result<()> {
     match event {
         SwarmEvent::NewListenAddr { address, .. } => {
@@ -199,6 +225,14 @@ fn handle_swarm(
                 .behaviour_mut()
                 .sync
                 .send_request(&peer_id, SyncRequest { topic: app.topic.clone() });
+            if !app.joined_announced {
+                app.joined_announced = true;
+                let bytes = app.doc.add_system_event(&format!("{operator} joined the board"));
+                rebuild_comms_log(app);
+                if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic.clone(), bytes) {
+                    app.push_log(format!("publish error: {e}"));
+                }
+            }
         }
 
         SwarmEvent::ConnectionClosed {
@@ -242,6 +276,10 @@ fn handle_swarm(
         })) => {
             if let Err(e) = app.doc.merge_bytes(&message.data) {
                 app.push_log(format!("merge error: {e}"));
+            } else {
+                let prev_len = app.comms_log.len();
+                rebuild_comms_log(app);
+                check_mentions(app, prev_len, operator);
             }
         }
 
@@ -254,16 +292,16 @@ fn handle_swarm(
             let is_ops_peer = info.protocol_version == expected_protocol;
             if is_ops_peer {
                 let name = info.agent_version.clone();
+                let was_online = app.peers.iter().any(|p| p.name == name && p.online);
                 peer_map.insert(peer_id, name.clone());
                 if let Some(peer) = app.peers.iter_mut().find(|p| p.name == name) {
                     peer.online = true;
                 } else {
-                    app.peers.push(tui::Peer {
-                        name: name.clone(),
-                        online: true,
-                    });
+                    app.peers.push(tui::Peer { name: name.clone(), online: true });
                 }
-                app.push_log(format!("online: {name}"));
+                if !was_online {
+                    app.push_log(format!("online: {name}"));
+                }
             }
         }
 
@@ -289,6 +327,9 @@ fn handle_swarm(
             if let Err(e) = app.doc.merge_bytes(&response.doc_bytes) {
                 app.push_log(format!("sync error: {e}"));
             } else {
+                let prev_len = app.comms_log.len();
+                rebuild_comms_log(app);
+                check_mentions(app, prev_len, operator);
                 app.push_log("synced doc from peer".to_string());
             }
         }
@@ -312,6 +353,7 @@ fn handle_input(
             if let Ok(mut clipboard) = arboard::Clipboard::new() {
                 if clipboard.set_text(app.topic.clone()).is_ok() {
                     app.push_log("copied topic to clipboard");
+                    app.copy_flash = Some(std::time::Instant::now());
                 } else {
                     app.push_log("failed to copy to clipboard");
                 }
@@ -360,6 +402,33 @@ fn handle_input(
     }
 
     Ok(false)
+}
+
+fn check_mentions(app: &mut tui::App, prev_len: usize, operator: &str) {
+    let mention = format!("@{}", operator.to_lowercase());
+    let triggered = app.comms_log[prev_len..]
+        .iter()
+        .any(|e| matches!(&e.kind, tui::CommsKind::Message { text, .. }
+            if text.to_lowercase().contains(&mention)));
+    if triggered {
+        app.mention_bell = Some(std::time::Instant::now());
+    }
+}
+
+fn rebuild_comms_log(app: &mut tui::App) {
+    app.comms_log = app
+        .doc
+        .read()
+        .notes
+        .into_iter()
+        .map(|note| {
+            let kind = match note.kind {
+                doc::NoteKind::System  => tui::CommsKind::System(note.text),
+                doc::NoteKind::Message => tui::CommsKind::Message { author: note.author, text: note.text },
+            };
+            tui::CommsEntry { timestamp: note.timestamp, kind }
+        })
+        .collect();
 }
 
 fn execute_command(
@@ -429,8 +498,9 @@ fn execute_command(
             Some(app.doc.delete_objective(index))
         }
         Command::Note { text } => {
-            app.push_log(format!("note: {text}"));
-            Some(app.doc.add_note(operator, &text))
+            let bytes = app.doc.add_note(operator, &text);
+            rebuild_comms_log(app);
+            Some(bytes)
         }
         Command::Clear => {
             app.doc = crate::doc::Doc::new();
@@ -441,7 +511,13 @@ fn execute_command(
             app.show_help = true;
             None
         }
-        Command::Quit => return Ok(true),
+        Command::Quit => {
+            let bytes = app.doc.add_system_event(&format!("{operator} left the board"));
+            if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic.clone(), bytes) {
+                app.push_log(format!("publish error: {e}"));
+            }
+            return Ok(true);
+        }
         Command::Unknown(s) => {
             if !s.is_empty() {
                 app.push_log(format!("unknown command: {s}"));

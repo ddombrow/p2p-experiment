@@ -13,13 +13,27 @@ pub struct Peer {
 }
 
 pub struct App {
-    pub doc: crate::doc::Doc,
-    pub operator: String,
-    pub topic: String,
-    pub peers: Vec<Peer>,
-    pub input: String,
-    pub log: Vec<String>,
-    pub show_help: bool,
+    pub doc:        crate::doc::Doc,
+    pub operator:   String,
+    pub topic:      String,
+    pub peers:      Vec<Peer>,
+    pub input:      String,
+    pub log:        Vec<String>,
+    pub comms_log:  Vec<CommsEntry>,
+    pub show_help:         bool,
+    pub copy_flash:        Option<std::time::Instant>,
+    pub mention_bell:      Option<std::time::Instant>,
+    pub joined_announced:  bool,
+}
+
+pub struct CommsEntry {
+    pub timestamp: String,
+    pub kind:      CommsKind,
+}
+
+pub enum CommsKind {
+    Message { author: String, text: String },
+    System(String),
 }
 
 impl App {
@@ -31,7 +45,11 @@ impl App {
             peers: vec![],
             input: String::new(),
             log: vec![],
+            comms_log: vec![],
             show_help: false,
+            copy_flash: None,
+            mention_bell: None,
+            joined_announced: false,
         }
     }
 
@@ -41,23 +59,25 @@ impl App {
             self.log.remove(0);
         }
     }
+
 }
+
 
 pub fn render(frame: &mut Frame, app: &App) {
     let board = app.doc.read();
 
-    let outer = Layout::vertical([
+    let chunks = Layout::vertical([
         Constraint::Length(1),
         Constraint::Min(0),
-        Constraint::Length(5),
+        Constraint::Length(8),
         Constraint::Length(3),
     ])
     .split(frame.area());
 
-    render_statusbar(frame, app, outer[0]);
-    render_main(frame, &board, app, outer[1]);
-    render_log(frame, app, outer[2]);
-    render_input(frame, app, outer[3]);
+    render_statusbar(frame, app, chunks[0]);
+    render_main(frame, &board, app, chunks[1]);
+    render_log(frame, app, chunks[2]);
+    render_input(frame, app, chunks[3]);
 
     if app.show_help {
         render_help_modal(frame);
@@ -68,12 +88,8 @@ pub fn is_copy_button_clicked(app: &App, col: u16, row: u16) -> bool {
     if row != 0 {
         return false;
     }
-    let online_count = app.peers.iter().filter(|p| p.online).count();
-    let peers_len = if online_count == 0 {
-        8 // "no peers"
-    } else {
-        online_count.to_string().len() + 7 // "X online"
-    };
+    let online_count = app.peers.iter().filter(|p| p.online).count() + 1; // +1 for self
+    let peers_len = online_count.to_string().len() + 7; // "X online"
     let start_col = 11 + app.operator.len() + 11 + peers_len + 10 + app.topic.len() + 3;
     let end_col = start_col + 6; // "[Copy]" is 6 chars
 
@@ -81,12 +97,8 @@ pub fn is_copy_button_clicked(app: &App, col: u16, row: u16) -> bool {
 }
 
 fn render_statusbar(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
-    let online_count = app.peers.iter().filter(|p| p.online).count();
-    let peers = if online_count == 0 {
-        "no peers".to_string()
-    } else {
-        format!("{online_count} online")
-    };
+    let online_count = app.peers.iter().filter(|p| p.online).count() + 1; // +1 for self
+    let peers = format!("{online_count} online");
     
     let text = Line::from(vec![
         Span::raw(" OPERATOR: "),
@@ -96,7 +108,16 @@ fn render_statusbar(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         Span::raw("   TOPIC: "),
         Span::styled(&app.topic, Style::default().fg(Color::Cyan)),
         Span::raw("   "),
-        Span::styled("[Copy]", Style::default().fg(Color::Black).bg(Color::White)),
+        {
+            let flashing = app.copy_flash
+                .map(|t| t.elapsed() < std::time::Duration::from_millis(300))
+                .unwrap_or(false);
+            if flashing {
+                Span::styled("[Copied!]", Style::default().fg(Color::Black).bg(Color::Green))
+            } else {
+                Span::styled("[Copy]", Style::default().fg(Color::Black).bg(Color::White))
+            }
+        },
     ]);
     
     frame.render_widget(
@@ -153,29 +174,7 @@ fn render_main(frame: &mut Frame, board: &Board, app: &App, area: ratatui::layou
         cols[0],
     );
 
-    // Notes
-    let note_items: Vec<ListItem> = board
-        .notes
-        .iter()
-        .map(|note| {
-            ListItem::new(Line::from(vec![
-                Span::styled(
-                    format!(" {}: ", note.author),
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(note.text.clone()),
-            ]))
-        })
-        .collect();
-
-    frame.render_widget(
-        List::new(note_items).block(Block::default().title(" NOTES ").borders(Borders::ALL)),
-        cols[1],
-    );
-
-    // Operators
+    // Operators (col 1)
     let mut operator_items: Vec<ListItem> = vec![ListItem::new(Line::from(vec![
         Span::styled(" ● ", Style::default().fg(Color::Green)),
         Span::styled(
@@ -202,8 +201,92 @@ fn render_main(frame: &mut Frame, board: &Board, app: &App, area: ratatui::layou
     frame.render_widget(
         List::new(operator_items)
             .block(Block::default().title(" OPERATORS ").borders(Borders::ALL)),
+        cols[1],
+    );
+
+    // Comms (col 2)
+    let known_operators: Vec<&str> = std::iter::once(app.operator.as_str())
+        .chain(app.peers.iter().map(|p| p.name.as_str()))
+        .collect();
+    let inner_height = cols[2].height.saturating_sub(2) as usize;
+    let comms_items: Vec<ListItem> = app
+        .comms_log
+        .iter()
+        .rev()
+        .take(inner_height)
+        .rev()
+        .map(|entry| match &entry.kind {
+            CommsKind::Message { author, text } => {
+                let is_me = *author == app.operator;
+                let author_style = if is_me {
+                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+                };
+                let mut spans = vec![
+                    Span::styled(format!(" [{}] ", entry.timestamp), Style::default().fg(Color::DarkGray)),
+                    Span::styled(format!("{author}: "), author_style),
+                ];
+                spans.extend(render_message_text(text, &known_operators));
+                ListItem::new(Line::from(spans))
+            }
+            CommsKind::System(text) => ListItem::new(Line::from(vec![
+                Span::styled(format!(" [{}] ", entry.timestamp), Style::default().fg(Color::DarkGray)),
+                Span::styled(format!("-- {text} --"), Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC)),
+            ])),
+        })
+        .collect();
+
+    let bell_active = app.mention_bell
+        .map(|t| {
+            let ms = t.elapsed().as_millis();
+            ms < 200 || (ms >= 350 && ms < 600)
+        })
+        .unwrap_or(false);
+    let comms_border_style = if bell_active {
+        Style::default().fg(Color::Yellow)
+    } else {
+        Style::default()
+    };
+
+    frame.render_widget(
+        List::new(comms_items).block(
+            Block::default().title(" COMMS ").borders(Borders::ALL).border_style(comms_border_style)
+        ),
         cols[2],
     );
+}
+
+
+fn render_message_text<'a>(text: &'a str, known_operators: &[&str]) -> Vec<Span<'a>> {
+    let mut spans = Vec::new();
+    let mut remaining = text;
+    while !remaining.is_empty() {
+        if let Some(at_pos) = remaining.find('@') {
+            if at_pos > 0 {
+                spans.push(Span::raw(remaining[..at_pos].to_string()));
+            }
+            let after_at = &remaining[at_pos + 1..];
+            let token_end = after_at.find(|c: char| c.is_whitespace()).unwrap_or(after_at.len());
+            let name = &after_at[..token_end];
+            let is_known = known_operators.iter().any(|op| {
+                op.to_lowercase().starts_with(&name.to_lowercase()) && !name.is_empty()
+            });
+            if is_known {
+                spans.push(Span::styled(
+                    format!("@{name}"),
+                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                ));
+            } else {
+                spans.push(Span::raw(format!("@{name}")));
+            }
+            remaining = &remaining[at_pos + 1 + token_end..];
+        } else {
+            spans.push(Span::raw(remaining.to_string()));
+            break;
+        }
+    }
+    spans
 }
 
 fn render_log(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
@@ -296,11 +379,11 @@ fn render_help_modal(frame: &mut Frame) {
         )),
         Line::from(""),
         Line::from(vec![
-            Span::styled("  note   ", Style::default().fg(Color::Yellow)),
+            Span::styled("  msg    ", Style::default().fg(Color::Cyan)),
             Span::raw("<text>"),
         ]),
         Line::from(Span::styled(
-            "    append to mission notes",
+            "    send a comms message  (Tab to switch boxes)",
             Style::default().fg(Color::DarkGray),
         )),
         Line::from(""),
@@ -333,14 +416,16 @@ fn render_help_modal(frame: &mut Frame) {
 }
 
 fn render_input(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
-    let help = " assign \"<task>\" <op>  |  status <n> active|done|abort  |  take <n>  |  del <n>  |  note <text>  |  q";
+    let help = " add \"<task>\"  assign <n> <op>  status <n> active|done|abort  take <n>  del <n>  msg <text>  help";
     let content = format!("> {}", app.input);
-    let para = Paragraph::new(vec![
-        Line::from(content),
-        Line::from(Span::styled(help, Style::default().fg(Color::DarkGray))),
-    ])
-    .block(Block::default().title(" COMMAND ").borders(Borders::ALL));
-    frame.render_widget(para, area);
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(content),
+            Line::from(Span::styled(help, Style::default().fg(Color::DarkGray))),
+        ])
+        .block(Block::default().title(" COMMAND ").borders(Borders::ALL)),
+        area,
+    );
 }
 
 pub fn parse_command(input: &str) -> Command {
@@ -408,6 +493,13 @@ pub fn parse_command(input: &str) -> Command {
         };
     }
 
+    if let Some(rest) = input.strip_prefix("msg ") {
+        return Command::Note {
+            text: rest.to_string(),
+        };
+    }
+
+    // legacy alias
     if let Some(rest) = input.strip_prefix("note ") {
         return Command::Note {
             text: rest.to_string(),

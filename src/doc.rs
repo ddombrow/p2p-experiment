@@ -1,3 +1,4 @@
+use std::time::{SystemTime, UNIX_EPOCH};
 use automerge::{AutoCommit, ObjType, ReadDoc, ScalarValue, Value, transaction::Transactable};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -35,10 +36,18 @@ pub struct Objective {
     pub assignee: String,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum NoteKind {
+    Message,
+    System,
+}
+
 #[derive(Debug, Clone)]
 pub struct Note {
-    pub author: String,
-    pub text: String,
+    pub author:    String,
+    pub text:      String,
+    pub timestamp: String,
+    pub kind:      NoteKind,
 }
 
 #[derive(Debug, Clone)]
@@ -100,14 +109,21 @@ impl Doc {
     }
 
     pub fn add_note(&mut self, author: &str, text: &str) -> Vec<u8> {
+        self.insert_note(author, text, "msg")
+    }
+
+    pub fn add_system_event(&mut self, text: &str) -> Vec<u8> {
+        self.insert_note("", text, "system")
+    }
+
+    fn insert_note(&mut self, author: &str, text: &str, kind: &str) -> Vec<u8> {
         let obj_id = self.get_or_create_list("notes");
-        let len = self.inner.length(&obj_id);
-        let item = self
-            .inner
-            .insert_object(&obj_id, len, ObjType::Map)
-            .unwrap();
-        self.inner.put(&item, "author", author).unwrap();
-        self.inner.put(&item, "text", text).unwrap();
+        let len    = self.inner.length(&obj_id);
+        let item   = self.inner.insert_object(&obj_id, len, ObjType::Map).unwrap();
+        self.inner.put(&item, "author",    author).unwrap();
+        self.inner.put(&item, "text",      text  ).unwrap();
+        self.inner.put(&item, "kind",      kind  ).unwrap();
+        self.inner.put(&item, "timestamp", note_timestamp()).unwrap();
         self.inner.save()
     }
 
@@ -157,9 +173,14 @@ impl Doc {
         (0..self.inner.length(&obj_id))
             .filter_map(|i| {
                 let (_, item_id) = self.inner.get(&obj_id, i).ok()??;
-                let author = self.str_field(&item_id, "author")?;
-                let text = self.str_field(&item_id, "text")?;
-                Some(Note { author, text })
+                let author    = self.str_field(&item_id, "author").unwrap_or_default();
+                let text      = self.str_field(&item_id, "text")?;
+                let timestamp = self.str_field(&item_id, "timestamp").unwrap_or_default();
+                let kind = match self.str_field(&item_id, "kind").as_deref() {
+                    Some("system") => NoteKind::System,
+                    _              => NoteKind::Message,
+                };
+                Some(Note { author, text, timestamp, kind })
             })
             .collect()
     }
@@ -173,6 +194,17 @@ impl Doc {
             _ => None,
         }
     }
+}
+
+fn note_timestamp() -> String {
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let h = (secs % 86400) / 3600;
+    let m = (secs % 3600) / 60;
+    let s = secs % 60;
+    format!("{h:02}:{m:02}:{s:02}")
 }
 
 #[cfg(test)]
