@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-libp2p = { version = "0.55", features = ["tokio", "tcp", "noise", "yamux", "mdns", "gossipsub", "identify", "macros", "request-response", "cbor"] }
+libp2p = { version = "0.55", features = ["tokio", "mdns", "gossipsub", "identify", "macros", "request-response", "cbor", "quic"] }
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

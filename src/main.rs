@@ -68,11 +68,7 @@ async fn main() -> anyhow::Result<()> {
     // Build swarm
     let mut swarm = libp2p::SwarmBuilder::with_new_identity()
         .with_tokio()
-        .with_tcp(
-            libp2p::tcp::Config::default(),
-            libp2p::noise::Config::new,
-            libp2p::yamux::Config::default,
-        )?
+        .with_quic()
         .with_behaviour(
             |key| -> Result<Behaviour, Box<dyn std::error::Error + Send + Sync>> {
                 let mdns = mdns::tokio::Behaviour::new(
@@ -122,7 +118,7 @@ async fn main() -> anyhow::Result<()> {
 
     let topic = gossipsub::IdentTopic::new(topic_str.clone());
     swarm.behaviour_mut().gossipsub.subscribe(&topic)?;
-    swarm.listen_on(format!("/ip4/0.0.0.0/tcp/{}", args.port).parse::<Multiaddr>()?)?;
+    swarm.listen_on(format!("/ip4/0.0.0.0/udp/{}/quic-v1", args.port).parse::<Multiaddr>()?)?;
 
     // App state
     let mut app = tui::App::new(args.name.clone(), topic_str.clone());
