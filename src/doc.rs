@@ -166,23 +166,27 @@ impl Doc {
     }
 
     fn read_messages(&self) -> Vec<Message> {
-        let obj_id = match self.inner.get(automerge::ROOT, "messages").unwrap() {
-            Some((_, id)) => id,
-            None => return vec![],
-        };
-        (0..self.inner.length(&obj_id))
-            .filter_map(|i| {
-                let (_, item_id) = self.inner.get(&obj_id, i).ok()??;
-                let author    = self.str_field(&item_id, "author").unwrap_or_default();
-                let text      = self.str_field(&item_id, "text")?;
-                let timestamp = self.str_field(&item_id, "timestamp").unwrap_or_default();
-                let kind = match self.str_field(&item_id, "kind").as_deref() {
-                    Some("system") => MessageKind::System,
-                    _              => MessageKind::Message,
-                };
-                Some(Message { author, text, timestamp, kind })
-            })
-            .collect()
+        let mut messages = Vec::new();
+        if let Ok(all_lists) = self.inner.get_all(automerge::ROOT, "messages") {
+            for (_, list_id) in all_lists {
+                for i in 0..self.inner.length(&list_id) {
+                    if let Ok(Some((_, item_id))) = self.inner.get(&list_id, i) {
+                        let author    = self.str_field(&item_id, "author").unwrap_or_default();
+                        let text      = self.str_field(&item_id, "text");
+                        if text.is_none() { continue; }
+                        let text = text.unwrap();
+                        let timestamp = self.str_field(&item_id, "timestamp").unwrap_or_default();
+                        let kind = match self.str_field(&item_id, "kind").as_deref() {
+                            Some("system") => MessageKind::System,
+                            _              => MessageKind::Message,
+                        };
+                        messages.push(Message { author, text, timestamp, kind });
+                    }
+                }
+            }
+        }
+        messages.sort_by_key(|m| m.timestamp.clone());
+        messages
     }
 
     fn str_field(&self, obj: &automerge::ObjId, key: &str) -> Option<String> {
@@ -219,7 +223,6 @@ mod tests {
         assert_eq!(board.objectives.len(), 1);
         assert_eq!(board.objectives[0].task, "Test Task");
     }
-}
 
     #[test]
     fn test_merge_conflict() {
@@ -245,3 +248,21 @@ mod tests {
         let board = doc1.read();
         assert_eq!(board.objectives.len(), 1, "Objectives length was {}", board.objectives.len());
     }
+
+    #[test]
+    fn test_merge_independent_messages() {
+        let mut doc1 = Doc::new();
+        doc1.add_system_event("Ops joined");
+        
+        let mut doc2 = Doc::new(); 
+        doc2.add_system_event("Beta joined");
+        
+        doc1.merge_bytes(&doc2.save()).unwrap();
+        
+        let all_messages = doc1.inner.get_all(automerge::ROOT, "messages").unwrap();
+        println!("All message objects: {:?}", all_messages);
+        
+        let board = doc1.read();
+        assert_eq!(board.messages.len(), 2, "Messages length was {}", board.messages.len());
+    }
+}

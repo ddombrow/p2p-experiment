@@ -23,7 +23,6 @@ pub struct App {
     pub show_help:         bool,
     pub copy_flash:        Option<std::time::Instant>,
     pub mention_bell:      Option<std::time::Instant>,
-    pub joined_announced:  bool,
 }
 
 pub struct CommsEntry {
@@ -49,7 +48,6 @@ impl App {
             show_help: false,
             copy_flash: None,
             mention_bell: None,
-            joined_announced: false,
         }
     }
 
@@ -269,7 +267,7 @@ fn render_message_text<'a>(text: &'a str, known_operators: &[&str]) -> Vec<Span<
             let after_at = &remaining[at_pos + 1..];
             let token_end = after_at.find(|c: char| c.is_whitespace()).unwrap_or(after_at.len());
             let name = &after_at[..token_end];
-            let is_known = known_operators.iter().any(|op| {
+            let is_known = name.to_lowercase() == "all" || known_operators.iter().any(|op| {
                 op.to_lowercase().starts_with(&name.to_lowercase()) && !name.is_empty()
             });
             if is_known {

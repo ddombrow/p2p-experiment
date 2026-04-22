@@ -142,6 +142,10 @@ async fn main() -> anyhow::Result<()> {
         app.push_log(format!("ingested objectives from {}", file_path));
     }
 
+    // Add join message to the document
+    app.doc.add_system_event(&format!("{} joined the board", args.name));
+    rebuild_comms_log(&mut app);
+
     // Terminal
     let mut terminal = ratatui::init();
     crossterm::execute!(std::io::stdout(), EnableMouseCapture)?;
@@ -225,14 +229,6 @@ fn handle_swarm(
                 .behaviour_mut()
                 .sync
                 .send_request(&peer_id, SyncRequest { topic: app.topic.clone() });
-            if !app.joined_announced {
-                app.joined_announced = true;
-                let bytes = app.doc.add_system_event(&format!("{operator} joined the board"));
-                rebuild_comms_log(app);
-                if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic.clone(), bytes) {
-                    app.push_log(format!("publish error: {e}"));
-                }
-            }
         }
 
         SwarmEvent::ConnectionClosed {
@@ -331,6 +327,14 @@ fn handle_swarm(
                 rebuild_comms_log(app);
                 check_mentions(app, prev_len, operator);
                 app.push_log("synced doc from peer".to_string());
+                // Re-broadcast after sync: gossipsub mesh is now established and
+                // our join event may have raced with the initial sync exchange.
+                let bytes = app.doc.save();
+                if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic.clone(), bytes) {
+                    if !matches!(e, libp2p::gossipsub::PublishError::Duplicate) {
+                        app.push_log(format!("publish error: {e}"));
+                    }
+                }
             }
         }
 
@@ -443,7 +447,8 @@ fn check_mentions(app: &mut tui::App, prev_len: usize, operator: &str) {
     let triggered = app.comms_log[prev_len..]
         .iter()
         .any(|e| matches!(&e.kind, tui::CommsKind::Message { text, .. }
-            if text.to_lowercase().contains(&mention)));
+            if text.to_lowercase().contains(&mention)
+            || text.to_lowercase().contains("@all")));
     if triggered {
         app.mention_bell = Some(std::time::Instant::now());
     }
@@ -547,8 +552,11 @@ fn execute_command(
         }
         Command::Quit => {
             let bytes = app.doc.add_system_event(&format!("{operator} left the board"));
+            rebuild_comms_log(app);
             if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic.clone(), bytes) {
-                app.push_log(format!("publish error: {e}"));
+                if !matches!(e, libp2p::gossipsub::PublishError::Duplicate) {
+                    app.push_log(format!("publish error: {e}"));
+                }
             }
             if let Err(e) = std::fs::create_dir_all("output") {
                 app.push_log(format!("output dir error: {e}"));
@@ -580,7 +588,9 @@ fn execute_command(
             .gossipsub
             .publish(topic.clone(), bytes)
     {
-        app.push_log(format!("publish error: {e}"));
+        if !matches!(e, libp2p::gossipsub::PublishError::Duplicate) {
+            app.push_log(format!("publish error: {e}"));
+        }
     }
 
     Ok(false)
