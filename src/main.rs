@@ -14,9 +14,7 @@ use clap::Parser;
 use crossterm::event::{
     DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyModifiers,
 };
-use futures::{
-    AsyncReadExt as _, AsyncWriteExt as _, StreamExt,
-};
+use futures::{AsyncReadExt as _, AsyncWriteExt as _, StreamExt};
 use libp2p::{
     Multiaddr, StreamProtocol, gossipsub, identify, mdns,
     request_response::{self, ProtocolSupport},
