@@ -17,7 +17,6 @@ use libp2p::{
     request_response::{self, ProtocolSupport, cbor},
     swarm::{NetworkBehaviour, SwarmEvent},
 };
-use rand::{Rng, distributions::Alphanumeric};
 use serde::{Deserialize, Serialize};
 use tui::{Command, parse_command};
 
@@ -62,12 +61,8 @@ async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
     let topic_str = args.topic.unwrap_or_else(|| {
-        let random_string: String = rand::thread_rng()
-            .sample_iter(&Alphanumeric)
-            .take(6)
-            .map(char::from)
-            .collect();
-        format!("ops-board-{}", random_string.to_lowercase())
+        let pet = petname::petname(2, "-").unwrap_or_else(|| "random-board".to_string());
+        format!("opsboard-{}", pet)
     });
 
     // Build swarm
@@ -102,13 +97,13 @@ async fn main() -> anyhow::Result<()> {
                 )?;
 
                 let identify = identify::Behaviour::new(
-                    identify::Config::new(format!("/ops-board/1.0.0/{}", topic_str), key.public())
+                    identify::Config::new(format!("/opsboard/1.0.0/{}", topic_str), key.public())
                         .with_agent_version(args.name.clone()),
                 );
 
                 let sync = cbor::Behaviour::<SyncRequest, SyncResponse>::new(
                     [(
-                        StreamProtocol::new("/ops-board/sync/1"),
+                        StreamProtocol::new("/opsboard/sync/1"),
                         ProtocolSupport::Full,
                     )],
                     request_response::Config::default(),
@@ -297,7 +292,7 @@ fn handle_swarm(
             info,
             ..
         })) => {
-            let expected_protocol = format!("/ops-board/1.0.0/{}", app.topic);
+            let expected_protocol = format!("/opsboard/1.0.0/{}", app.topic);
             let is_ops_peer = info.protocol_version == expected_protocol;
             if is_ops_peer {
                 let name = info.agent_version.clone();

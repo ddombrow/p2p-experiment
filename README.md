@@ -28,7 +28,7 @@ There are two modes of operation: **Leader** (creates the board) and **Operative
 
 **1. Leader — start a board from a mission file:**
 ```bash
-# Ingests one task per line. Generates a unique topic (e.g. ops-board-a1b2c3).
+# Ingests one task per line. Generates a unique topic (e.g. opsboard-rapid-dog).
 # The topic is shown in the status bar — click [Copy] to copy it to your clipboard.
 cargo run -- --name Alice --file example-boards/red-team.txt
 ```
@@ -37,7 +37,7 @@ cargo run -- --name Alice --file example-boards/red-team.txt
 ```bash
 # Joins Alice's board. mDNS discovers her automatically on the LAN.
 # The full CRDT document is synced on connect.
-cargo run -- --name Bob --topic ops-board-a1b2c3
+cargo run -- --name Bob --topic opsboard-rapid-dog
 ```
 
 > **Tip:** The `--port` flag is optional. If omitted, an ephemeral port is assigned automatically.
