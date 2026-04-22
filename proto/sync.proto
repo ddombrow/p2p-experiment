@@ -1,0 +1,10 @@
+syntax = "proto3";
+package sync;
+
+message SyncRequest {
+  string topic = 1;
+}
+
+message SyncResponse {
+  bytes doc_bytes = 1;
+}

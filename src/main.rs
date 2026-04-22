@@ -4,21 +4,31 @@ mod tui;
 use std::{
     collections::HashMap,
     hash::{Hash, Hasher},
+    io,
     time::Duration,
 };
 
+use async_trait::async_trait;
+use bytes::Bytes;
 use clap::Parser;
 use crossterm::event::{
     DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyModifiers,
 };
-use futures::StreamExt;
+use futures::{
+    AsyncReadExt as _, AsyncWriteExt as _, StreamExt,
+};
 use libp2p::{
     Multiaddr, StreamProtocol, gossipsub, identify, mdns,
-    request_response::{self, ProtocolSupport, cbor},
+    request_response::{self, ProtocolSupport},
     swarm::{NetworkBehaviour, SwarmEvent},
 };
-use serde::{Deserialize, Serialize};
+use prost::Message;
 use tui::{Command, parse_command};
+
+// --- Protobuf generated types ---
+pub mod proto {
+    include!(concat!(env!("OUT_DIR"), "/sync.rs"));
+}
 
 // --- CLI ---
 
@@ -34,16 +44,75 @@ struct Args {
     topic: Option<String>,
 }
 
-// --- Request/response sync protocol ---
+// --- Request/response sync protocol (Protobuf codec) ---
 
-#[derive(Debug, Serialize, Deserialize)]
-struct SyncRequest {
-    topic: String,
-}
+type SyncRequest = proto::SyncRequest;
+type SyncResponse = proto::SyncResponse;
 
-#[derive(Debug, Serialize, Deserialize)]
-struct SyncResponse {
-    doc_bytes: Vec<u8>,
+#[derive(Clone, Default)]
+struct SyncCodec;
+
+#[async_trait]
+impl request_response::Codec for SyncCodec {
+    type Protocol = StreamProtocol;
+    type Request = SyncRequest;
+    type Response = SyncResponse;
+
+    async fn read_request<T: Send + Unpin + futures::AsyncRead>(
+        &mut self,
+        _: &StreamProtocol,
+        io: &mut T,
+    ) -> io::Result<Self::Request> {
+        let mut buf = Vec::new();
+        unsigned_varint::aio::read_usize(&mut *io)
+            .await
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        io.read_to_end(&mut buf).await?;
+        SyncRequest::decode(Bytes::from(buf))
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    }
+
+    async fn read_response<T: Send + Unpin + futures::AsyncRead>(
+        &mut self,
+        _: &StreamProtocol,
+        io: &mut T,
+    ) -> io::Result<Self::Response> {
+        let mut buf = Vec::new();
+        unsigned_varint::aio::read_usize(&mut *io)
+            .await
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        io.read_to_end(&mut buf).await?;
+        SyncResponse::decode(Bytes::from(buf))
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    }
+
+    async fn write_request<T: Send + Unpin + futures::AsyncWrite>(
+        &mut self,
+        _: &StreamProtocol,
+        io: &mut T,
+        req: Self::Request,
+    ) -> io::Result<()> {
+        let buf = req.encode_to_vec();
+        let mut varint_buf = unsigned_varint::encode::usize_buffer();
+        io.write_all(unsigned_varint::encode::usize(buf.len(), &mut varint_buf))
+            .await?;
+        io.write_all(&buf).await?;
+        io.close().await
+    }
+
+    async fn write_response<T: Send + Unpin + futures::AsyncWrite>(
+        &mut self,
+        _: &StreamProtocol,
+        io: &mut T,
+        resp: Self::Response,
+    ) -> io::Result<()> {
+        let buf = resp.encode_to_vec();
+        let mut varint_buf = unsigned_varint::encode::usize_buffer();
+        io.write_all(unsigned_varint::encode::usize(buf.len(), &mut varint_buf))
+            .await?;
+        io.write_all(&buf).await?;
+        io.close().await
+    }
 }
 
 // --- Combined network behaviour ---
@@ -53,7 +122,7 @@ struct Behaviour {
     mdns: mdns::tokio::Behaviour,
     gossipsub: gossipsub::Behaviour,
     identify: identify::Behaviour,
-    sync: cbor::Behaviour<SyncRequest, SyncResponse>,
+    sync: request_response::Behaviour<SyncCodec>,
 }
 
 #[tokio::main]
@@ -97,7 +166,7 @@ async fn main() -> anyhow::Result<()> {
                         .with_agent_version(args.name.clone()),
                 );
 
-                let sync = cbor::Behaviour::<SyncRequest, SyncResponse>::new(
+                let sync = request_response::Behaviour::<SyncCodec>::new(
                     [(
                         StreamProtocol::new("/opsboard/sync/1"),
                         ProtocolSupport::Full,

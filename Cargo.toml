@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-libp2p = { version = "0.55", features = ["tokio", "mdns", "gossipsub", "identify", "macros", "request-response", "cbor", "quic"] }
+libp2p = { version = "0.55", features = ["tokio", "mdns", "gossipsub", "identify", "macros", "request-response", "quic"] }
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -14,8 +14,13 @@ clap = { version = "4", features = ["derive"] }
 automerge = "0.5"
 ratatui = "0.29"
 crossterm = { version = "0.28", features = ["event-stream"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
 rand = "0.8"
 arboard = "3.6.1"
 petname = "3.0.0"
+prost = "0.14.3"
+bytes = "1.11.1"
+unsigned-varint = { version = "0.8.0", features = ["futures"] }
+async-trait = "0.1.89"
+
+[build-dependencies]
+prost-build = "0.14.3"
