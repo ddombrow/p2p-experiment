@@ -8,17 +8,18 @@ use std::{
 };
 
 use clap::Parser;
-use crossterm::event::{Event, EventStream, KeyCode, KeyModifiers, EnableMouseCapture, DisableMouseCapture};
+use crossterm::event::{
+    DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyModifiers,
+};
 use futures::StreamExt;
 use libp2p::{
-    gossipsub, identify, mdns,
-    request_response::{self, cbor, ProtocolSupport},
+    Multiaddr, StreamProtocol, gossipsub, identify, mdns,
+    request_response::{self, ProtocolSupport, cbor},
     swarm::{NetworkBehaviour, SwarmEvent},
-    Multiaddr, StreamProtocol,
 };
-use rand::{distributions::Alphanumeric, Rng};
+use rand::{Rng, distributions::Alphanumeric};
 use serde::{Deserialize, Serialize};
-use tui::{parse_command, Command};
+use tui::{Command, parse_command};
 
 // --- CLI ---
 
@@ -143,7 +144,8 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Add join message to the document
-    app.doc.add_system_event(&format!("{} joined the board", args.name));
+    app.doc
+        .add_system_event(&format!("{} joined the board", args.name));
     rebuild_comms_log(&mut app);
 
     // Terminal
@@ -174,16 +176,25 @@ async fn run(
             let mention_next = app.mention_bell.and_then(|t| {
                 let elapsed = t.elapsed();
                 let ms = elapsed.as_millis();
-                let next_ms: u64 = if ms < 200 { 200 } else if ms < 350 { 350 } else if ms < 600 { 600 } else { return None; };
+                let next_ms: u64 = if ms < 200 {
+                    200
+                } else if ms < 350 {
+                    350
+                } else if ms < 600 {
+                    600
+                } else {
+                    return None;
+                };
                 std::time::Duration::from_millis(next_ms).checked_sub(elapsed)
             });
             let deadlines = [
-                app.copy_flash.and_then(|t| std::time::Duration::from_millis(300).checked_sub(t.elapsed())),
+                app.copy_flash
+                    .and_then(|t| std::time::Duration::from_millis(300).checked_sub(t.elapsed())),
                 mention_next,
             ];
             match deadlines.iter().flatten().copied().min() {
                 Some(d) => tokio::time::sleep(d).await,
-                None    => std::future::pending::<()>().await,
+                None => std::future::pending::<()>().await,
             }
         };
 
@@ -225,10 +236,12 @@ fn handle_swarm(
 
         SwarmEvent::ConnectionEstablished { peer_id, .. } => {
             app.push_log(format!("connected: {peer_id}"));
-            swarm
-                .behaviour_mut()
-                .sync
-                .send_request(&peer_id, SyncRequest { topic: app.topic.clone() });
+            swarm.behaviour_mut().sync.send_request(
+                &peer_id,
+                SyncRequest {
+                    topic: app.topic.clone(),
+                },
+            );
         }
 
         SwarmEvent::ConnectionClosed {
@@ -293,7 +306,10 @@ fn handle_swarm(
                 if let Some(peer) = app.peers.iter_mut().find(|p| p.name == name) {
                     peer.online = true;
                 } else {
-                    app.peers.push(tui::Peer { name: name.clone(), online: true });
+                    app.peers.push(tui::Peer {
+                        name: name.clone(),
+                        online: true,
+                    });
                 }
                 if !was_online {
                     app.push_log(format!("online: {name}"));
@@ -303,7 +319,10 @@ fn handle_swarm(
 
         SwarmEvent::Behaviour(BehaviourEvent::Sync(request_response::Event::Message {
             peer: _,
-            message: request_response::Message::Request { request, channel, .. },
+            message:
+                request_response::Message::Request {
+                    request, channel, ..
+                },
             ..
         })) => {
             if request.topic == app.topic {
@@ -330,7 +349,11 @@ fn handle_swarm(
                 // Re-broadcast after sync: gossipsub mesh is now established and
                 // our join event may have raced with the initial sync exchange.
                 let bytes = app.doc.save();
-                if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic.clone(), bytes) {
+                if let Err(e) = swarm
+                    .behaviour_mut()
+                    .gossipsub
+                    .publish(topic.clone(), bytes)
+                {
                     if !matches!(e, libp2p::gossipsub::PublishError::Duplicate) {
                         app.push_log(format!("publish error: {e}"));
                     }
@@ -351,7 +374,8 @@ fn handle_input(
     operator: &str,
 ) -> anyhow::Result<bool> {
     if let Event::Mouse(mouse_event) = event {
-        if mouse_event.kind == crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left)
+        if mouse_event.kind
+            == crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left)
             && tui::is_copy_button_clicked(app, mouse_event.column, mouse_event.row)
         {
             if let Ok(mut clipboard) = arboard::Clipboard::new() {
@@ -417,9 +441,17 @@ fn render_asciidoc(board: &doc::Board, topic: &str, operator: &str) -> String {
     if board.objectives.is_empty() {
         out.push_str("_No objectives._\n\n");
     } else {
-        out.push_str("[cols=\">1,^1,<4,<2\", options=\"header\"]\n|===\n| # | Status | Task | Assignee\n\n");
+        out.push_str(
+            "[cols=\">1,^1,<4,<2\", options=\"header\"]\n|===\n| # | Status | Task | Assignee\n\n",
+        );
         for (i, obj) in board.objectives.iter().enumerate() {
-            out.push_str(&format!("| {} | {} | {} | {}\n", i + 1, obj.status.as_str(), obj.task, obj.assignee));
+            out.push_str(&format!(
+                "| {} | {} | {} | {}\n",
+                i + 1,
+                obj.status.as_str(),
+                obj.task,
+                obj.assignee
+            ));
         }
         out.push_str("|===\n\n");
     }
@@ -431,7 +463,10 @@ fn render_asciidoc(board: &doc::Board, topic: &str, operator: &str) -> String {
         for msg in &board.messages {
             match msg.kind {
                 doc::MessageKind::Message => {
-                    out.push_str(&format!("`[{}]` *{}*: {}\n\n", msg.timestamp, msg.author, msg.text));
+                    out.push_str(&format!(
+                        "`[{}]` *{}*: {}\n\n",
+                        msg.timestamp, msg.author, msg.text
+                    ));
                 }
                 doc::MessageKind::System => {
                     out.push_str(&format!("`[{}]` _{}_\n\n", msg.timestamp, msg.text));
@@ -444,11 +479,11 @@ fn render_asciidoc(board: &doc::Board, topic: &str, operator: &str) -> String {
 
 fn check_mentions(app: &mut tui::App, prev_len: usize, operator: &str) {
     let mention = format!("@{}", operator.to_lowercase());
-    let triggered = app.comms_log[prev_len..]
-        .iter()
-        .any(|e| matches!(&e.kind, tui::CommsKind::Message { text, .. }
+    let triggered = app.comms_log[prev_len..].iter().any(|e| {
+        matches!(&e.kind, tui::CommsKind::Message { text, .. }
             if text.to_lowercase().contains(&mention)
-            || text.to_lowercase().contains("@all")));
+            || text.to_lowercase().contains("@all"))
+    });
     if triggered {
         app.mention_bell = Some(std::time::Instant::now());
     }
@@ -462,10 +497,16 @@ fn rebuild_comms_log(app: &mut tui::App) {
         .into_iter()
         .map(|msg| {
             let kind = match msg.kind {
-                doc::MessageKind::System  => tui::CommsKind::System(msg.text),
-                doc::MessageKind::Message => tui::CommsKind::Message { author: msg.author, text: msg.text },
+                doc::MessageKind::System => tui::CommsKind::System(msg.text),
+                doc::MessageKind::Message => tui::CommsKind::Message {
+                    author: msg.author,
+                    text: msg.text,
+                },
             };
-            tui::CommsEntry { timestamp: msg.timestamp, kind }
+            tui::CommsEntry {
+                timestamp: msg.timestamp,
+                kind,
+            }
         })
         .collect();
 }
@@ -551,9 +592,15 @@ fn execute_command(
             None
         }
         Command::Quit => {
-            let bytes = app.doc.add_system_event(&format!("{operator} left the board"));
+            let bytes = app
+                .doc
+                .add_system_event(&format!("{operator} left the board"));
             rebuild_comms_log(app);
-            if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic.clone(), bytes) {
+            if let Err(e) = swarm
+                .behaviour_mut()
+                .gossipsub
+                .publish(topic.clone(), bytes)
+            {
                 if !matches!(e, libp2p::gossipsub::PublishError::Duplicate) {
                     app.push_log(format!("publish error: {e}"));
                 }
@@ -568,7 +615,10 @@ fn execute_command(
                     app.push_log(format!("saved session to {stem}.automerge"));
                 }
                 let board = app.doc.read();
-                if let Err(e) = std::fs::write(format!("{stem}.adoc"), render_asciidoc(&board, &app.topic, operator)) {
+                if let Err(e) = std::fs::write(
+                    format!("{stem}.adoc"),
+                    render_asciidoc(&board, &app.topic, operator),
+                ) {
                     app.push_log(format!("adoc save error: {e}"));
                 }
             }

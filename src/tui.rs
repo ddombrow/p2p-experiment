@@ -13,21 +13,21 @@ pub struct Peer {
 }
 
 pub struct App {
-    pub doc:        crate::doc::Doc,
-    pub operator:   String,
-    pub topic:      String,
-    pub peers:      Vec<Peer>,
-    pub input:      String,
-    pub log:        Vec<String>,
-    pub comms_log:  Vec<CommsEntry>,
-    pub show_help:         bool,
-    pub copy_flash:        Option<std::time::Instant>,
-    pub mention_bell:      Option<std::time::Instant>,
+    pub doc: crate::doc::Doc,
+    pub operator: String,
+    pub topic: String,
+    pub peers: Vec<Peer>,
+    pub input: String,
+    pub log: Vec<String>,
+    pub comms_log: Vec<CommsEntry>,
+    pub show_help: bool,
+    pub copy_flash: Option<std::time::Instant>,
+    pub mention_bell: Option<std::time::Instant>,
 }
 
 pub struct CommsEntry {
     pub timestamp: String,
-    pub kind:      CommsKind,
+    pub kind: CommsKind,
 }
 
 pub enum CommsKind {
@@ -57,9 +57,7 @@ impl App {
             self.log.remove(0);
         }
     }
-
 }
-
 
 pub fn render(frame: &mut Frame, app: &App) {
     let board = app.doc.read();
@@ -97,7 +95,7 @@ pub fn is_copy_button_clicked(app: &App, col: u16, row: u16) -> bool {
 fn render_statusbar(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let online_count = app.peers.iter().filter(|p| p.online).count() + 1; // +1 for self
     let peers = format!("{online_count} online");
-    
+
     let text = Line::from(vec![
         Span::raw(" OPERATOR: "),
         Span::styled(&app.operator, Style::default().fg(Color::Yellow)),
@@ -107,17 +105,21 @@ fn render_statusbar(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         Span::styled(&app.topic, Style::default().fg(Color::Cyan)),
         Span::raw("   "),
         {
-            let flashing = app.copy_flash
+            let flashing = app
+                .copy_flash
                 .map(|t| t.elapsed() < std::time::Duration::from_millis(300))
                 .unwrap_or(false);
             if flashing {
-                Span::styled("[Copied!]", Style::default().fg(Color::Black).bg(Color::Green))
+                Span::styled(
+                    "[Copied!]",
+                    Style::default().fg(Color::Black).bg(Color::Green),
+                )
             } else {
                 Span::styled("[Copy]", Style::default().fg(Color::Black).bg(Color::White))
             }
         },
     ]);
-    
+
     frame.render_widget(
         Paragraph::new(text).style(Style::default().bg(Color::DarkGray).fg(Color::White)),
         area,
@@ -139,10 +141,22 @@ fn render_main(frame: &mut Frame, board: &Board, app: &App, area: ratatui::layou
         .enumerate()
         .map(|(i, obj)| {
             let (badge_fg, badge_bg, task_style) = match obj.status {
-                Status::Active   => (Color::Black, Color::Yellow,  Style::default().add_modifier(Modifier::BOLD)),
-                Status::Done     => (Color::Black, Color::Green,   Style::default().add_modifier(Modifier::DIM)),
-                Status::Abort    => (Color::White, Color::Red,     Style::default().add_modifier(Modifier::DIM)),
-                Status::Pending  => (Color::Black, Color::DarkGray,Style::default()),
+                Status::Active => (
+                    Color::Black,
+                    Color::Yellow,
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
+                Status::Done => (
+                    Color::Black,
+                    Color::Green,
+                    Style::default().add_modifier(Modifier::DIM),
+                ),
+                Status::Abort => (
+                    Color::White,
+                    Color::Red,
+                    Style::default().add_modifier(Modifier::DIM),
+                ),
+                Status::Pending => (Color::Black, Color::DarkGray, Style::default()),
             };
             let line = Line::from(vec![
                 Span::styled(
@@ -151,13 +165,13 @@ fn render_main(frame: &mut Frame, board: &Board, app: &App, area: ratatui::layou
                 ),
                 Span::styled(
                     format!(" {} ", obj.status.as_str()),
-                    Style::default().fg(badge_fg).bg(badge_bg).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(badge_fg)
+                        .bg(badge_bg)
+                        .add_modifier(Modifier::BOLD),
                 ),
                 Span::raw(" "),
-                Span::styled(
-                    format!("{:<30}", obj.task),
-                    task_style,
-                ),
+                Span::styled(format!("{:<30}", obj.task), task_style),
                 Span::styled(
                     format!(" @ {}", obj.assignee),
                     Style::default().fg(Color::Cyan),
@@ -217,25 +231,41 @@ fn render_main(frame: &mut Frame, board: &Board, app: &App, area: ratatui::layou
             CommsKind::Message { author, text } => {
                 let is_me = *author == app.operator;
                 let author_style = if is_me {
-                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD)
                 } else {
-                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD)
                 };
                 let mut spans = vec![
-                    Span::styled(format!(" [{}] ", entry.timestamp), Style::default().fg(Color::DarkGray)),
+                    Span::styled(
+                        format!(" [{}] ", entry.timestamp),
+                        Style::default().fg(Color::DarkGray),
+                    ),
                     Span::styled(format!("{author}: "), author_style),
                 ];
                 spans.extend(render_message_text(text, &known_operators));
                 ListItem::new(Line::from(spans))
             }
             CommsKind::System(text) => ListItem::new(Line::from(vec![
-                Span::styled(format!(" [{}] ", entry.timestamp), Style::default().fg(Color::DarkGray)),
-                Span::styled(format!("-- {text} --"), Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC)),
+                Span::styled(
+                    format!(" [{}] ", entry.timestamp),
+                    Style::default().fg(Color::DarkGray),
+                ),
+                Span::styled(
+                    format!("-- {text} --"),
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::ITALIC),
+                ),
             ])),
         })
         .collect();
 
-    let bell_active = app.mention_bell
+    let bell_active = app
+        .mention_bell
         .map(|t| {
             let ms = t.elapsed().as_millis();
             ms < 200 || (ms >= 350 && ms < 600)
@@ -249,12 +279,14 @@ fn render_main(frame: &mut Frame, board: &Board, app: &App, area: ratatui::layou
 
     frame.render_widget(
         List::new(comms_items).block(
-            Block::default().title(" COMMS ").borders(Borders::ALL).border_style(comms_border_style)
+            Block::default()
+                .title(" COMMS ")
+                .borders(Borders::ALL)
+                .border_style(comms_border_style),
         ),
         cols[2],
     );
 }
-
 
 fn render_message_text<'a>(text: &'a str, known_operators: &[&str]) -> Vec<Span<'a>> {
     let mut spans = Vec::new();
@@ -265,15 +297,20 @@ fn render_message_text<'a>(text: &'a str, known_operators: &[&str]) -> Vec<Span<
                 spans.push(Span::raw(remaining[..at_pos].to_string()));
             }
             let after_at = &remaining[at_pos + 1..];
-            let token_end = after_at.find(|c: char| c.is_whitespace()).unwrap_or(after_at.len());
+            let token_end = after_at
+                .find(|c: char| c.is_whitespace())
+                .unwrap_or(after_at.len());
             let name = &after_at[..token_end];
-            let is_known = name.to_lowercase() == "all" || known_operators.iter().any(|op| {
-                op.to_lowercase().starts_with(&name.to_lowercase()) && !name.is_empty()
-            });
+            let is_known = name.to_lowercase() == "all"
+                || known_operators.iter().any(|op| {
+                    op.to_lowercase().starts_with(&name.to_lowercase()) && !name.is_empty()
+                });
             if is_known {
                 spans.push(Span::styled(
                     format!("@{name}"),
-                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
                 ));
             } else {
                 spans.push(Span::raw(format!("@{name}")));

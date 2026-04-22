@@ -1,5 +1,5 @@
-use std::time::{SystemTime, UNIX_EPOCH};
 use automerge::{AutoCommit, ObjType, ReadDoc, ScalarValue, Value, transaction::Transactable};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Status {
@@ -44,10 +44,10 @@ pub enum MessageKind {
 
 #[derive(Debug, Clone)]
 pub struct Message {
-    pub author:    String,
-    pub text:      String,
+    pub author: String,
+    pub text: String,
     pub timestamp: String,
-    pub kind:      MessageKind,
+    pub kind: MessageKind,
 }
 
 #[derive(Debug, Clone)]
@@ -69,7 +69,10 @@ impl Doc {
     fn get_or_create_list(&mut self, name: &str) -> automerge::ObjId {
         match self.inner.get(automerge::ROOT, name).unwrap() {
             Some((_, id)) => id,
-            None => self.inner.put_object(automerge::ROOT, name, ObjType::List).unwrap(),
+            None => self
+                .inner
+                .put_object(automerge::ROOT, name, ObjType::List)
+                .unwrap(),
         }
     }
 
@@ -118,12 +121,17 @@ impl Doc {
 
     fn insert_message(&mut self, author: &str, text: &str, kind: &str) -> Vec<u8> {
         let obj_id = self.get_or_create_list("messages");
-        let len    = self.inner.length(&obj_id);
-        let item   = self.inner.insert_object(&obj_id, len, ObjType::Map).unwrap();
-        self.inner.put(&item, "author",    author).unwrap();
-        self.inner.put(&item, "text",      text  ).unwrap();
-        self.inner.put(&item, "kind",      kind  ).unwrap();
-        self.inner.put(&item, "timestamp", current_timestamp()).unwrap();
+        let len = self.inner.length(&obj_id);
+        let item = self
+            .inner
+            .insert_object(&obj_id, len, ObjType::Map)
+            .unwrap();
+        self.inner.put(&item, "author", author).unwrap();
+        self.inner.put(&item, "text", text).unwrap();
+        self.inner.put(&item, "kind", kind).unwrap();
+        self.inner
+            .put(&item, "timestamp", current_timestamp())
+            .unwrap();
         self.inner.save()
     }
 
@@ -171,16 +179,23 @@ impl Doc {
             for (_, list_id) in all_lists {
                 for i in 0..self.inner.length(&list_id) {
                     if let Ok(Some((_, item_id))) = self.inner.get(&list_id, i) {
-                        let author    = self.str_field(&item_id, "author").unwrap_or_default();
-                        let text      = self.str_field(&item_id, "text");
-                        if text.is_none() { continue; }
+                        let author = self.str_field(&item_id, "author").unwrap_or_default();
+                        let text = self.str_field(&item_id, "text");
+                        if text.is_none() {
+                            continue;
+                        }
                         let text = text.unwrap();
                         let timestamp = self.str_field(&item_id, "timestamp").unwrap_or_default();
                         let kind = match self.str_field(&item_id, "kind").as_deref() {
                             Some("system") => MessageKind::System,
-                            _              => MessageKind::Message,
+                            _ => MessageKind::Message,
                         };
-                        messages.push(Message { author, text, timestamp, kind });
+                        messages.push(Message {
+                            author,
+                            text,
+                            timestamp,
+                            kind,
+                        });
                     }
                 }
             }
@@ -228,41 +243,56 @@ mod tests {
     fn test_merge_conflict() {
         let mut doc1 = Doc::new();
         doc1.add_objective("Task A", "unassigned");
-        
+
         let mut doc2 = Doc::new(); // doc2 has empty list
-        
+
         doc1.merge_bytes(&doc2.save()).unwrap();
-        
+
         let board = doc1.read();
-        assert_eq!(board.objectives.len(), 1, "Objectives length was {}", board.objectives.len());
+        assert_eq!(
+            board.objectives.len(),
+            1,
+            "Objectives length was {}",
+            board.objectives.len()
+        );
     }
 
     #[test]
     fn test_merge_conflict_2() {
         let mut doc1 = Doc::new();
-        let mut doc2 = Doc::new(); 
+        let mut doc2 = Doc::new();
         doc2.add_objective("Task A", "unassigned");
-        
+
         doc1.merge_bytes(&doc2.save()).unwrap();
-        
+
         let board = doc1.read();
-        assert_eq!(board.objectives.len(), 1, "Objectives length was {}", board.objectives.len());
+        assert_eq!(
+            board.objectives.len(),
+            1,
+            "Objectives length was {}",
+            board.objectives.len()
+        );
     }
 
     #[test]
     fn test_merge_independent_messages() {
         let mut doc1 = Doc::new();
         doc1.add_system_event("Ops joined");
-        
-        let mut doc2 = Doc::new(); 
+
+        let mut doc2 = Doc::new();
         doc2.add_system_event("Beta joined");
-        
+
         doc1.merge_bytes(&doc2.save()).unwrap();
-        
+
         let all_messages = doc1.inner.get_all(automerge::ROOT, "messages").unwrap();
         println!("All message objects: {:?}", all_messages);
-        
+
         let board = doc1.read();
-        assert_eq!(board.messages.len(), 2, "Messages length was {}", board.messages.len());
+        assert_eq!(
+            board.messages.len(),
+            2,
+            "Messages length was {}",
+            board.messages.len()
+        );
     }
 }
