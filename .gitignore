@@ -1,2 +1,4 @@
 /target
 Procfile
+/output/*.adoc
+/output/*.automerge

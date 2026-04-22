@@ -37,23 +37,23 @@ pub struct Objective {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum NoteKind {
+pub enum MessageKind {
     Message,
     System,
 }
 
 #[derive(Debug, Clone)]
-pub struct Note {
+pub struct Message {
     pub author:    String,
     pub text:      String,
     pub timestamp: String,
-    pub kind:      NoteKind,
+    pub kind:      MessageKind,
 }
 
 #[derive(Debug, Clone)]
 pub struct Board {
     pub objectives: Vec<Objective>,
-    pub notes: Vec<Note>,
+    pub messages: Vec<Message>,
 }
 
 pub struct Doc {
@@ -108,22 +108,22 @@ impl Doc {
         self.inner.save()
     }
 
-    pub fn add_note(&mut self, author: &str, text: &str) -> Vec<u8> {
-        self.insert_note(author, text, "msg")
+    pub fn add_message(&mut self, author: &str, text: &str) -> Vec<u8> {
+        self.insert_message(author, text, "msg")
     }
 
     pub fn add_system_event(&mut self, text: &str) -> Vec<u8> {
-        self.insert_note("", text, "system")
+        self.insert_message("", text, "system")
     }
 
-    fn insert_note(&mut self, author: &str, text: &str, kind: &str) -> Vec<u8> {
-        let obj_id = self.get_or_create_list("notes");
+    fn insert_message(&mut self, author: &str, text: &str, kind: &str) -> Vec<u8> {
+        let obj_id = self.get_or_create_list("messages");
         let len    = self.inner.length(&obj_id);
         let item   = self.inner.insert_object(&obj_id, len, ObjType::Map).unwrap();
         self.inner.put(&item, "author",    author).unwrap();
         self.inner.put(&item, "text",      text  ).unwrap();
         self.inner.put(&item, "kind",      kind  ).unwrap();
-        self.inner.put(&item, "timestamp", note_timestamp()).unwrap();
+        self.inner.put(&item, "timestamp", current_timestamp()).unwrap();
         self.inner.save()
     }
 
@@ -140,7 +140,7 @@ impl Doc {
     pub fn read(&self) -> Board {
         Board {
             objectives: self.read_objectives(),
-            notes: self.read_notes(),
+            messages: self.read_messages(),
         }
     }
 
@@ -165,8 +165,8 @@ impl Doc {
             .collect()
     }
 
-    fn read_notes(&self) -> Vec<Note> {
-        let obj_id = match self.inner.get(automerge::ROOT, "notes").unwrap() {
+    fn read_messages(&self) -> Vec<Message> {
+        let obj_id = match self.inner.get(automerge::ROOT, "messages").unwrap() {
             Some((_, id)) => id,
             None => return vec![],
         };
@@ -177,10 +177,10 @@ impl Doc {
                 let text      = self.str_field(&item_id, "text")?;
                 let timestamp = self.str_field(&item_id, "timestamp").unwrap_or_default();
                 let kind = match self.str_field(&item_id, "kind").as_deref() {
-                    Some("system") => NoteKind::System,
-                    _              => NoteKind::Message,
+                    Some("system") => MessageKind::System,
+                    _              => MessageKind::Message,
                 };
-                Some(Note { author, text, timestamp, kind })
+                Some(Message { author, text, timestamp, kind })
             })
             .collect()
     }
@@ -196,7 +196,7 @@ impl Doc {
     }
 }
 
-fn note_timestamp() -> String {
+fn current_timestamp() -> String {
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())

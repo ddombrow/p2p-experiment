@@ -64,13 +64,15 @@ Once the UI is running, use the command bar at the bottom to interact with the b
 | `assign <n> <operator>` | `assign 1 Bob` | Assign objective `n` to an operator |
 | `status <n> <state>` | `status 1 active` | Set status of objective `n` (`active`, `done`, `abort`, `pending`) |
 | `take <n>` | `take 1` | Reassign objective `n` to yourself |
-| `note <text>` | `note "Router is back up"` | Append a message to the mission notes |
+| `msg <text>` | `msg "Router is back up"` | Send a message to the comms channel |
 | `del <n>` | `del 1` | Delete objective `n` |
 | `clear` | `clear` | Clear the entire board |
 | `help` | `help` | Show the help modal |
 | `quit` or `q` | `q` | Exit the application |
 
 *(Use `Esc` or `Enter` to dismiss the help modal)*
+
+> **@mentions:** Type `@name` in a `msg` to highlight that operator's name in the comms panel. The recipient's COMMS border flashes twice to catch their attention.
 
 ### Status Colors
 
@@ -82,3 +84,14 @@ Objectives are color-coded for fast at-a-glance situational awareness:
 | `ACTIVE` | **Yellow** | In progress |
 | `DONE` | **Green** | Completed |
 | `ABORT` | **Red** | Cancelled or failed |
+
+## Session Output
+
+When any operator quits (`q`), two files are written to the `output/` directory:
+
+| File | Description |
+| :--- | :--- |
+| `{topic}-{operator}.automerge` | Full CRDT document snapshot — can be loaded into any automerge-compatible tool |
+| `{topic}-{operator}.adoc` | Human-readable AsciiDoc export of the objectives table and comms log |
+
+Files are overwritten on each quit. The `output/` directory is gitignored (contents only — the folder itself is tracked).

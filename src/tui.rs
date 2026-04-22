@@ -494,14 +494,7 @@ pub fn parse_command(input: &str) -> Command {
     }
 
     if let Some(rest) = input.strip_prefix("msg ") {
-        return Command::Note {
-            text: rest.to_string(),
-        };
-    }
-
-    // legacy alias
-    if let Some(rest) = input.strip_prefix("note ") {
-        return Command::Note {
+        return Command::Msg {
             text: rest.to_string(),
         };
     }
@@ -515,7 +508,7 @@ pub enum Command {
     Status { index: usize, status: String },
     Take { index: usize },
     Delete { index: usize },
-    Note { text: String },
+    Msg { text: String },
     Clear,
     Help,
     Quit,

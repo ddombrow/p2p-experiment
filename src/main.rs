@@ -404,6 +404,40 @@ fn handle_input(
     Ok(false)
 }
 
+fn render_asciidoc(board: &doc::Board, topic: &str, operator: &str) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("= Ops Board: {topic}\n"));
+    out.push_str(&format!(":operator: {operator}\n\n"));
+
+    out.push_str("== Objectives\n\n");
+    if board.objectives.is_empty() {
+        out.push_str("_No objectives._\n\n");
+    } else {
+        out.push_str("[cols=\">1,^1,<4,<2\", options=\"header\"]\n|===\n| # | Status | Task | Assignee\n\n");
+        for (i, obj) in board.objectives.iter().enumerate() {
+            out.push_str(&format!("| {} | {} | {} | {}\n", i + 1, obj.status.as_str(), obj.task, obj.assignee));
+        }
+        out.push_str("|===\n\n");
+    }
+
+    out.push_str("== Comms\n\n");
+    if board.messages.is_empty() {
+        out.push_str("_No messages._\n");
+    } else {
+        for msg in &board.messages {
+            match msg.kind {
+                doc::MessageKind::Message => {
+                    out.push_str(&format!("`[{}]` *{}*: {}\n\n", msg.timestamp, msg.author, msg.text));
+                }
+                doc::MessageKind::System => {
+                    out.push_str(&format!("`[{}]` _{}_\n\n", msg.timestamp, msg.text));
+                }
+            }
+        }
+    }
+    out
+}
+
 fn check_mentions(app: &mut tui::App, prev_len: usize, operator: &str) {
     let mention = format!("@{}", operator.to_lowercase());
     let triggered = app.comms_log[prev_len..]
@@ -419,14 +453,14 @@ fn rebuild_comms_log(app: &mut tui::App) {
     app.comms_log = app
         .doc
         .read()
-        .notes
+        .messages
         .into_iter()
-        .map(|note| {
-            let kind = match note.kind {
-                doc::NoteKind::System  => tui::CommsKind::System(note.text),
-                doc::NoteKind::Message => tui::CommsKind::Message { author: note.author, text: note.text },
+        .map(|msg| {
+            let kind = match msg.kind {
+                doc::MessageKind::System  => tui::CommsKind::System(msg.text),
+                doc::MessageKind::Message => tui::CommsKind::Message { author: msg.author, text: msg.text },
             };
-            tui::CommsEntry { timestamp: note.timestamp, kind }
+            tui::CommsEntry { timestamp: msg.timestamp, kind }
         })
         .collect();
 }
@@ -497,8 +531,8 @@ fn execute_command(
             app.push_log(format!("deleted [{}]", index + 1));
             Some(app.doc.delete_objective(index))
         }
-        Command::Note { text } => {
-            let bytes = app.doc.add_note(operator, &text);
+        Command::Msg { text } => {
+            let bytes = app.doc.add_message(operator, &text);
             rebuild_comms_log(app);
             Some(bytes)
         }
@@ -515,6 +549,20 @@ fn execute_command(
             let bytes = app.doc.add_system_event(&format!("{operator} left the board"));
             if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic.clone(), bytes) {
                 app.push_log(format!("publish error: {e}"));
+            }
+            if let Err(e) = std::fs::create_dir_all("output") {
+                app.push_log(format!("output dir error: {e}"));
+            } else {
+                let stem = format!("output/{}-{}", app.topic, operator);
+                if let Err(e) = std::fs::write(format!("{stem}.automerge"), app.doc.save()) {
+                    app.push_log(format!("save error: {e}"));
+                } else {
+                    app.push_log(format!("saved session to {stem}.automerge"));
+                }
+                let board = app.doc.read();
+                if let Err(e) = std::fs::write(format!("{stem}.adoc"), render_asciidoc(&board, &app.topic, operator)) {
+                    app.push_log(format!("adoc save error: {e}"));
+                }
             }
             return Ok(true);
         }
